@@ -1,0 +1,34 @@
+name: flutter_network_throttler
+description: "Simulate slow, unreliable, or failing network conditions in Flutter apps to test loading, timeout, and error states."
+version: 0.0.1
+homepage: https://github.com/firaskola/flutter_network_throttler
+repository: https://github.com/firaskola/flutter_network_throttler
+issue_tracker: https://github.com/firaskola/flutter_network_throttler/issues
+
+topics:
+  - network
+  - testing
+  - http
+  - dio
+  - simulation
+
+environment:
+  sdk: ^3.12.2
+  flutter: ">=1.17.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  meta: ^1.15.0
+  http: ^1.2.0
+  dio: ^5.7.0
+  web_socket_channel: ^3.0.0
+  stream_channel: ^2.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  fake_async: ^1.3.1
+
+flutter:

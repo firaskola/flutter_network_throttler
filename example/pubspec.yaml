@@ -1,0 +1,22 @@
+name: example
+description: "Example app for flutter_network_throttler — a debug control panel and a demo client."
+publish_to: none
+
+environment:
+  sdk: ^3.12.2
+  flutter: ">=1.17.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_network_throttler:
+    path: ../
+  http: ^1.2.0
+  web_socket_channel: ^3.0.0
+  stream_channel: ^2.1.0
+
+dev_dependencies:
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

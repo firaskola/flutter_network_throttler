@@ -1,0 +1,5 @@
+tags:
+  screenshot:
+    description: >-
+      Rasterises the live NetworkThrottlerPanel to doc/panel.png. Requires
+      macOS system fonts; auto-skips elsewhere (e.g. CI).
