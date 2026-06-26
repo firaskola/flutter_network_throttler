@@ -38,7 +38,7 @@ live from a drop-in debug **control panel**.
 
 ```yaml
 dependencies:
-  flutter_network_throttler: ^0.0.1
+  flutter_network_throttler: ^1.0.0
 ```
 
 Everything is driven by a single `ThrottleController`:
