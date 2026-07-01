@@ -1,4 +1,0 @@
-# Test-only binaries — kept in git (CI needs them), excluded from the published
-# package to keep the download lean. Consumers never run our tests.
-test/fonts/
-test/ui/goldens/
