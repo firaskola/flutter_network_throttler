@@ -1,13 +1,17 @@
 # flutter_network_throttler
 
 Simulate slow, unreliable, or failing network conditions in your Flutter app so
-you can test loading spinners, timeouts, retries, and error states — without
-depending on a real flaky server.
+you can **test loading spinners, timeouts, retries, and error states** — in
+widget/integration tests *and* by hand — without depending on a real flaky
+server.
 
-Route your real HTTP traffic through a throttling adapter, then tune everything
-live from a drop-in debug **control panel**.
+Route your real HTTP/dio/WebSocket traffic through a throttling adapter, drive it
+deterministically from tests with a `seed`, and tune everything live from a
+drop-in debug **control panel**.
 
 [![pub package](https://img.shields.io/pub/v/flutter_network_throttler.svg)](https://pub.dev/packages/flutter_network_throttler)
+[![CI](https://github.com/firaskola/flutter_network_throttler/actions/workflows/ci.yaml/badge.svg)](https://github.com/firaskola/flutter_network_throttler/actions/workflows/ci.yaml)
+[![codecov](https://codecov.io/gh/firaskola/flutter_network_throttler/branch/main/graph/badge.svg)](https://codecov.io/gh/firaskola/flutter_network_throttler)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 <p align="center">
@@ -16,17 +20,23 @@ live from a drop-in debug **control panel**.
 
 ## Features
 
-- 🐢 **Conditions** — latency, jitter, bandwidth cap, and packet loss.
+- 🐢 **Conditions** — connection-setup (DNS/TLS) delay, latency, jitter,
+  bandwidth cap, and packet loss.
+- 🎲 **Latency distributions** — `uniform`, `gaussian`, or `long-tail` jitter to
+  mimic real-world tail latency.
 - 📱 **Presets** — `Offline`, `2G`, `3G`, `4G`, `WiFi`, plus **saved custom presets**.
 - 💥 **Failure injection** — fail a configurable fraction of requests with a
-  `timeout`, `500`, `403`, or `no-connection`.
-- 🎯 **Per-endpoint rules** — glob-match a method + path and slow it, fail it, or
-  let it pass through untouched — edited from a built-in rule editor.
+  `timeout`, `500`, `403`, **`429` (with `Retry-After`)**, or `no-connection`.
+- 🧪 **Response tampering** — truncate, corrupt, or replace a fraction of
+  successful response bodies to test parser robustness.
+- 🎯 **Per-endpoint rules** — match by method, path/URL glob, **host, query, and
+  headers**, with optional **anchoring** — slow it, fail it, or pass it through.
 - 📡 **Live request log** — captured with outcome, timing, metrics, filters,
   pause/clear, and tap-to-inspect.
-- 🔌 **Real traffic** — a `package:http` client wrapper, a `package:dio`
-  interceptor, a `WebSocketChannel` wrapper, **and** a generic `Stream`
-  transformer share one engine.
+- 🔌 **Real traffic** — a `package:http` client wrapper (**streaming**, with
+  bandwidth applied progressively), a `package:dio` interceptor, a
+  `WebSocketChannel` wrapper, **and** a generic `Stream` transformer share one
+  engine.
 - 🎛️ **Control panel** — `NetworkThrottlerPanel`, a debug UI to drive it all.
 - 💾 **Persistence** — save/restore configuration via any store you plug in.
 - 🎬 **Scenario scripting** — script timed conditions ("offline for 5s, then 3G").
@@ -49,6 +59,52 @@ import 'package:flutter_network_throttler/flutter_network_throttler.dart';
 final controller = ThrottleController();
 ```
 
+## Testing (the main event)
+
+The control panel is great for poking at your app by hand — but the real payoff
+is **deterministic tests** of your loading, timeout, retry, and error states.
+Pass a `seed` so every jitter draw and failure roll is repeatable, point your
+UI at a `ThrottleClient`, and assert on what the user sees.
+
+```dart
+testWidgets('shows a retry button when the feed request fails', (tester) async {
+  // p=1.0 + seed => this request always fails, identically, every run.
+  final controller = ThrottleController(
+    profile: const ThrottleProfile(
+      condition: NetworkCondition.perfect,
+      failure: FailureInjection(
+        enabled: true,
+        type: FailureType.http500,
+        probability: 1.0,
+      ),
+    ),
+    seed: 42,
+  );
+  final client = ThrottleClient(yourBackendOrMock, controller: controller);
+
+  await tester.pumpWidget(MyFeedScreen(client: client));
+  await tester.pumpAndSettle();
+
+  expect(find.text('Something went wrong'), findsOneWidget);
+  expect(find.text('Retry'), findsOneWidget);
+});
+```
+
+Other handy testing recipes:
+
+- **Slow network → loading spinner.** Apply `NetworkCondition.twoG` (or a custom
+  latency) and assert the spinner is on screen before `pumpAndSettle`.
+- **Rate limiting.** Use `FailureType.http429`; the synthesized response carries
+  a `Retry-After` header so you can test your back-off.
+- **Malformed payloads.** Turn on `ResponseTampering` (truncate / corrupt /
+  garbage) and assert your parser fails gracefully.
+- **Flaky timelines.** Drive a `ThrottleScenario` ("offline for 5s, then 3G")
+  with `package:fake_async` for fast, deterministic integration tests.
+- **No HTTP?** Wrap any `Future` with `NetworkThrottler(seed: ...)`.
+
+Because `ThrottleClient` is a normal `http.Client` and `ThrottleInterceptor` a
+normal dio `Interceptor`, they drop into whatever you already inject in tests.
+
 ## Throttle real HTTP traffic
 
 ### package:http
@@ -61,6 +117,12 @@ final client = ThrottleClient(http.Client(), controller: controller);
 // Now behaves according to the controller's profile, and is logged.
 final response = await client.get(Uri.parse('https://api.example.com/v1/feed'));
 ```
+
+`ThrottleClient` **streams** the response body through, applying the bandwidth
+cap progressively per chunk instead of buffering the whole payload in memory —
+so large downloads don't blow up memory and download progress reaches your UI as
+it arrives. Pass `streamResponses: false` to buffer instead (responses are also
+buffered automatically when response tampering applies to a request).
 
 ### package:dio
 
@@ -219,26 +281,62 @@ controller.applyPreset(NetworkCondition.threeG);
 
 // …or tune individual conditions.
 controller
+  ..setConnectionSetup(const Duration(milliseconds: 200)) // DNS/TLS handshake
   ..setLatency(const Duration(milliseconds: 200))
+  ..setJitter(const Duration(milliseconds: 80))
+  ..setDistribution(LatencyDistribution.longTail) // uniform | gaussian | longTail
+  ..setBandwidth(780)   // kbps
   ..setPacketLoss(0.1); // 10%
 
-// Inject failures.
+// Inject failures, including 429 with a Retry-After header.
 controller
   ..toggleFailure()
-  ..setFailureType(FailureType.http500)
+  ..setFailureType(FailureType.http429)
+  ..setRetryAfter(const Duration(seconds: 5))
   ..setFailureProbability(0.25);
 
-// Per-endpoint rules (first match wins).
+// Damage a fraction of response bodies to test parser robustness.
+controller
+  ..toggleTampering()
+  ..setTamperMode(TamperMode.corrupt) // truncate | corrupt | garbage
+  ..setTamperProbability(0.1);
+```
+
+### Per-endpoint rules
+
+Rules are evaluated in order (first match wins). Match on method + a path/URL
+glob, and optionally narrow by **host**, **query**, **headers**, or require the
+pattern to match the whole URL with **`anchored`**:
+
+```dart
+// Slow one endpoint.
 controller.addRule(const EndpointRule(
   method: 'GET',
   pattern: '/v1/feed',
   action: DelayAction(Duration(milliseconds: 800)),
 ));
+
+// Let CDN images through, matched by host.
 controller.addRule(const EndpointRule(
-  pattern: '*.cdn.img/*',
+  pattern: '/img/*',
+  host: '*.cdn.example.com',
   action: PassThroughAction(),
 ));
+
+// Fail only authenticated, paged search requests.
+controller.addRule(const EndpointRule(
+  pattern: '/search',
+  anchored: true,                       // exact path, not a substring
+  query: {'page': '*'},
+  headers: {'authorization': 'Bearer *'},
+  action: FailAction(FailureType.http403),
+));
 ```
+
+> By default a pattern matches as a **substring** (`/v1/feed` also matches
+> `/api/v1/feed/extra`). Set `anchored: true` to require an end-to-end match.
+> Header matching needs the adapter to forward request headers — the bundled
+> `http` and `dio` adapters do this for you.
 
 ## Generic streams (gRPC, SSE, event buses)
 
@@ -321,6 +419,29 @@ final value = await throttler.throttle(
 It throws `SimulatedNetworkException` when a request is dropped.
 
 See the [`example/`](example/) app for the panel wired to a demo client.
+
+## Providing the controller
+
+`ThrottleController` is a `ChangeNotifier`, so it slots into whatever you already
+use. For plain Flutter, there's a built-in `InheritedNotifier`:
+
+```dart
+NetworkThrottlerScope(
+  controller: controller,
+  child: MyApp(),
+);
+
+// Anywhere below:
+final controller = NetworkThrottlerScope.of(context);
+```
+
+Using a state-management package? Drop it straight in:
+
+- **provider** — `ChangeNotifierProvider.value(value: controller)`
+- **Riverpod** — expose it from a `ChangeNotifierProvider` / `Provider`
+- **Bloc** — hold it in a cubit, or `RepositoryProvider.value(value: controller)`
+
+No extra dependency is added by this package for any of these.
 
 ## Additional information
 

@@ -1,5 +1,10 @@
 tags:
+  golden:
+    description: >-
+      Golden (visual regression) test for the NetworkThrottlerPanel. Renders
+      with the checked-in Roboto fonts and a tolerant comparator, so it runs on
+      any platform. Update the baseline with `--update-goldens`.
   screenshot:
     description: >-
-      Rasterises the live NetworkThrottlerPanel to doc/panel.png. Requires
-      macOS system fonts; auto-skips elsewhere (e.g. CI).
+      Regenerates the README image doc/panel.png from the live panel. Loads the
+      checked-in Roboto fonts, so it runs anywhere (not just macOS).

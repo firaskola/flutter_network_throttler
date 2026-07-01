@@ -4,6 +4,7 @@ import '../model/endpoint_rule.dart';
 import '../model/failure.dart';
 import '../model/network_condition.dart';
 import '../model/request_log.dart';
+import '../model/response_tampering.dart';
 import '../model/throttle_profile.dart';
 import '../network_throttler.dart';
 
@@ -13,13 +14,16 @@ import '../network_throttler.dart';
 /// error or synthesize an HTTP response with the right status code.
 class EngineFailure {
   /// Creates an engine failure.
-  const EngineFailure(this.type, this.reason);
+  const EngineFailure(this.type, this.reason, {this.retryAfter});
 
   /// The kind of failure to produce.
   final FailureType type;
 
   /// Where the failure came from: `'packet loss'`, `'rule'`, or `'injection'`.
   final String reason;
+
+  /// The `Retry-After` delay to advertise (set for HTTP 429), or `null`.
+  final Duration? retryAfter;
 
   /// The HTTP status to synthesize, or `null` for connection-level failures.
   int? get httpStatus => type.httpStatus;
@@ -38,6 +42,7 @@ class EnginePlan {
     required this.condition,
     this.failure,
     this.matchedRule,
+    this.tampering,
   });
 
   /// When `true`, the request is sent untouched (throttling disabled or a
@@ -55,6 +60,9 @@ class EnginePlan {
 
   /// The rule that matched this request, if any.
   final EndpointRule? matchedRule;
+
+  /// Response tampering to apply to an otherwise-successful body, or `null`.
+  final ResponseTampering? tampering;
 }
 
 /// The adapter-agnostic decision core of the throttler.
@@ -85,7 +93,14 @@ class ThrottleEngine {
   final Random _random;
 
   /// Decides what to do with a request to [url] using [method].
-  EnginePlan planRequest(String method, Uri url) {
+  ///
+  /// [requestHeaders] (when supplied by an adapter) lets header-based
+  /// [EndpointRule] matchers apply.
+  EnginePlan planRequest(
+    String method,
+    Uri url, {
+    Map<String, String> requestHeaders = const <String, String>{},
+  }) {
     final profile = _profile();
     final condition = profile.condition;
 
@@ -97,8 +112,13 @@ class ThrottleEngine {
       );
     }
 
-    final matched = _firstMatchingRule(profile.rules, method, url);
-    var latency = _latencyFor(condition);
+    final matched = _firstMatchingRule(
+      profile.rules,
+      method,
+      url,
+      requestHeaders,
+    );
+    var latency = condition.sampleLatency(_random);
     EngineFailure? failure;
 
     if (matched != null) {
@@ -114,7 +134,7 @@ class ThrottleEngine {
         case DelayAction(:final extra):
           latency += extra;
         case FailAction(:final type):
-          failure = EngineFailure(type, 'rule');
+          failure = _engineFailure(profile, type, 'rule');
       }
     }
 
@@ -127,7 +147,16 @@ class ThrottleEngine {
     if (failure == null &&
         profile.failure.enabled &&
         _roll(profile.failure.probability)) {
-      failure = EngineFailure(profile.failure.type, 'injection');
+      failure = _engineFailure(profile, profile.failure.type, 'injection');
+    }
+
+    // Response tampering only applies to responses that would otherwise
+    // succeed.
+    ResponseTampering? tampering;
+    if (failure == null &&
+        profile.tampering.enabled &&
+        _roll(profile.tampering.probability)) {
+      tampering = profile.tampering;
     }
 
     return EnginePlan(
@@ -136,6 +165,7 @@ class ThrottleEngine {
       condition: condition,
       failure: failure,
       matchedRule: matched,
+      tampering: tampering,
     );
   }
 
@@ -146,24 +176,38 @@ class ThrottleEngine {
     return NetworkThrottler.transferDuration(bytes, kbps);
   }
 
+  /// Applies [tampering] to a response [body], using the engine's RNG so the
+  /// damage is deterministic under a seed.
+  List<int> applyTampering(ResponseTampering tampering, List<int> body) =>
+      tampering.apply(body, _random);
+
   /// Records a captured request outcome to the log sink.
   void record(RequestLogEntry entry) => _onLog(entry);
+
+  EngineFailure _engineFailure(
+    ThrottleProfile profile,
+    FailureType type,
+    String reason,
+  ) {
+    return EngineFailure(
+      type,
+      reason,
+      retryAfter: type.hasRetryAfter ? profile.failure.retryAfter : null,
+    );
+  }
 
   EndpointRule? _firstMatchingRule(
     List<EndpointRule> rules,
     String method,
     Uri url,
+    Map<String, String> requestHeaders,
   ) {
     for (final rule in rules) {
-      if (rule.matches(method, url)) return rule;
+      if (rule.matches(method, url, requestHeaders: requestHeaders)) {
+        return rule;
+      }
     }
     return null;
-  }
-
-  Duration _latencyFor(NetworkCondition condition) {
-    final jitterMicros = condition.latencyJitter.inMicroseconds;
-    final extra = jitterMicros <= 0 ? 0 : _random.nextInt(jitterMicros + 1);
-    return condition.latency + Duration(microseconds: extra);
   }
 
   bool _roll(double probability) {

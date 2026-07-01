@@ -8,6 +8,20 @@ void main() {
       expect(NetworkCondition.fromJson(c.toJson()), c);
     });
 
+    test('NetworkCondition with connection setup and distribution', () {
+      const c = NetworkCondition(
+        name: 'Custom',
+        connectionSetup: Duration(milliseconds: 250),
+        latency: Duration(milliseconds: 120),
+        latencyJitter: Duration(milliseconds: 60),
+        distribution: LatencyDistribution.gaussian,
+        downloadKbps: 1500,
+        uploadKbps: 700,
+        packetLoss: 0.12,
+      );
+      expect(NetworkCondition.fromJson(c.toJson()), c);
+    });
+
     test('FailureInjection', () {
       const f = FailureInjection(
         enabled: true,
@@ -15,6 +29,40 @@ void main() {
         probability: 0.3,
       );
       expect(FailureInjection.fromJson(f.toJson()), f);
+    });
+
+    test('FailureInjection with 429 retry-after', () {
+      const f = FailureInjection(
+        enabled: true,
+        type: FailureType.http429,
+        probability: 0.5,
+        retryAfter: Duration(seconds: 7),
+      );
+      expect(FailureInjection.fromJson(f.toJson()), f);
+    });
+
+    test('ResponseTampering', () {
+      for (final mode in TamperMode.values) {
+        final t = ResponseTampering(
+          enabled: true,
+          mode: mode,
+          probability: 0.25,
+        );
+        expect(ResponseTampering.fromJson(t.toJson()), t);
+      }
+    });
+
+    test('EndpointRule with host/query/headers/anchored', () {
+      const rule = EndpointRule(
+        method: 'GET',
+        pattern: '/search',
+        action: DelayAction(Duration(milliseconds: 300)),
+        host: '*.example.com',
+        query: {'q': '*'},
+        headers: {'x-test': 'on'},
+        anchored: true,
+      );
+      expect(EndpointRule.fromJson(rule.toJson()), rule);
     });
 
     test('RuleAction variants', () {
@@ -48,6 +96,23 @@ void main() {
             action: DelayAction(Duration(milliseconds: 200)),
           ),
         ],
+      );
+      expect(ThrottleProfile.fromJson(profile.toJson()), profile);
+    });
+
+    test('ThrottleProfile with tampering and 429 failure', () {
+      final profile = ThrottleProfile.initial.copyWith(
+        failure: const FailureInjection(
+          enabled: true,
+          type: FailureType.http429,
+          probability: 0.2,
+          retryAfter: Duration(seconds: 3),
+        ),
+        tampering: const ResponseTampering(
+          enabled: true,
+          mode: TamperMode.corrupt,
+          probability: 0.4,
+        ),
       );
       expect(ThrottleProfile.fromJson(profile.toJson()), profile);
     });

@@ -7,6 +7,7 @@ import '../model/endpoint_rule.dart';
 import '../model/failure.dart';
 import '../model/network_condition.dart';
 import '../model/request_log.dart';
+import '../model/response_tampering.dart';
 import '../model/throttle_profile.dart';
 import '../persistence/throttle_storage.dart';
 import 'throttle_engine.dart';
@@ -96,6 +97,9 @@ class ThrottleController extends ChangeNotifier {
 
   /// The active failure-injection config.
   FailureInjection get failure => _profile.failure;
+
+  /// The active response-tampering config.
+  ResponseTampering get tampering => _profile.tampering;
 
   /// The active per-endpoint rules.
   List<EndpointRule> get rules => _profile.rules;
@@ -188,6 +192,10 @@ class ThrottleController extends ChangeNotifier {
     }
   }
 
+  /// Sets the connection-setup (DNS/TLS) delay, marking the profile `'Custom'`.
+  void setConnectionSetup(Duration value) =>
+      _setCustomCondition(_profile.condition.copyWith(connectionSetup: value));
+
   /// Sets the base latency, marking the profile as `'Custom'`.
   void setLatency(Duration value) =>
       _setCustomCondition(_profile.condition.copyWith(latency: value));
@@ -195,6 +203,10 @@ class ThrottleController extends ChangeNotifier {
   /// Sets the latency jitter, marking the profile as `'Custom'`.
   void setJitter(Duration value) =>
       _setCustomCondition(_profile.condition.copyWith(latencyJitter: value));
+
+  /// Sets how jitter is distributed, marking the profile as `'Custom'`.
+  void setDistribution(LatencyDistribution value) =>
+      _setCustomCondition(_profile.condition.copyWith(distribution: value));
 
   /// Sets the bandwidth cap in kbps, marking the profile as `'Custom'`.
   void setBandwidth(int kbps) =>
@@ -220,6 +232,34 @@ class ThrottleController extends ChangeNotifier {
   /// Sets the failure-injection probability `0.0`–`1.0`.
   void setFailureProbability(double value) => _set(
     _profile.copyWith(failure: _profile.failure.copyWith(probability: value)),
+  );
+
+  /// Sets the `Retry-After` delay advertised on injected 429 responses.
+  void setRetryAfter(Duration value) => _set(
+    _profile.copyWith(failure: _profile.failure.copyWith(retryAfter: value)),
+  );
+
+  // --- response tampering --------------------------------------------------
+
+  /// Toggles response tampering on or off.
+  void toggleTampering() => _set(
+    _profile.copyWith(
+      tampering: _profile.tampering.copyWith(
+        enabled: !_profile.tampering.enabled,
+      ),
+    ),
+  );
+
+  /// Selects how a tampered response body is mangled.
+  void setTamperMode(TamperMode mode) => _set(
+    _profile.copyWith(tampering: _profile.tampering.copyWith(mode: mode)),
+  );
+
+  /// Sets the response-tampering probability `0.0`–`1.0`.
+  void setTamperProbability(double value) => _set(
+    _profile.copyWith(
+      tampering: _profile.tampering.copyWith(probability: value),
+    ),
   );
 
   // --- rules ---------------------------------------------------------------

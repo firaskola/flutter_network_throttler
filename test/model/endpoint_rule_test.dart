@@ -45,6 +45,100 @@ void main() {
         isFalse,
       );
     });
+
+    test('unanchored pattern matches as a substring', () {
+      const rule = EndpointRule(
+        pattern: '/v1/feed',
+        action: PassThroughAction(),
+      );
+      expect(
+        rule.matches('GET', Uri.parse('https://api.test/api/v1/feed/extra')),
+        isTrue,
+        reason: 'default substring matching',
+      );
+    });
+
+    test('anchored pattern requires the whole path to match', () {
+      const rule = EndpointRule(
+        pattern: '/v1/feed',
+        action: PassThroughAction(),
+        anchored: true,
+      );
+      expect(
+        rule.matches('GET', Uri.parse('https://api.test/v1/feed?page=2')),
+        isTrue,
+      );
+      expect(
+        rule.matches('GET', Uri.parse('https://api.test/api/v1/feed/extra')),
+        isFalse,
+        reason: 'anchoring rejects the substring match',
+      );
+    });
+
+    test('host constraint must match the request host', () {
+      const rule = EndpointRule(
+        pattern: '*',
+        host: '*.cdn.example.com',
+        action: PassThroughAction(),
+      );
+      expect(
+        rule.matches('GET', Uri.parse('https://img.cdn.example.com/a.png')),
+        isTrue,
+      );
+      expect(
+        rule.matches('GET', Uri.parse('https://api.example.com/a.png')),
+        isFalse,
+      );
+    });
+
+    test('query constraint must be present and match', () {
+      const rule = EndpointRule(
+        pattern: '/search',
+        query: {'q': '*', 'sort': 'desc'},
+        action: PassThroughAction(),
+      );
+      expect(
+        rule.matches(
+          'GET',
+          Uri.parse('https://api.test/search?q=cats&sort=desc'),
+        ),
+        isTrue,
+      );
+      expect(
+        rule.matches('GET', Uri.parse('https://api.test/search?q=cats')),
+        isFalse,
+        reason: 'missing sort=desc',
+      );
+    });
+
+    test('header constraint matches case-insensitively', () {
+      const rule = EndpointRule(
+        pattern: '/v1/feed',
+        headers: {'authorization': 'Bearer *'},
+        action: FailAction(FailureType.http403),
+      );
+      expect(
+        rule.matches(
+          'GET',
+          Uri.parse('https://api.test/v1/feed'),
+          requestHeaders: {'Authorization': 'Bearer abc123'},
+        ),
+        isTrue,
+      );
+      expect(
+        rule.matches(
+          'GET',
+          Uri.parse('https://api.test/v1/feed'),
+          requestHeaders: {'authorization': 'Basic xyz'},
+        ),
+        isFalse,
+      );
+      expect(
+        rule.matches('GET', Uri.parse('https://api.test/v1/feed')),
+        isFalse,
+        reason: 'no headers supplied',
+      );
+    });
   });
 
   group('RuleAction labels and kinds', () {

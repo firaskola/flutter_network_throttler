@@ -116,11 +116,8 @@ class NetworkThrottler {
     );
   }
 
-  Duration _nextLatency(NetworkCondition condition) {
-    final jitterMicros = condition.latencyJitter.inMicroseconds;
-    final extra = jitterMicros <= 0 ? 0 : _random.nextInt(jitterMicros + 1);
-    return condition.latency + Duration(microseconds: extra);
-  }
+  Duration _nextLatency(NetworkCondition condition) =>
+      condition.sampleLatency(_random);
 
   bool _shouldFail(NetworkCondition condition) {
     if (condition.packetLoss <= 0.0) {

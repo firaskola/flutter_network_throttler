@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question / discussion
+    url: https://github.com/firaskola/flutter_network_throttler/discussions
+    about: For usage questions and ideas that aren't bug reports or feature requests.

@@ -3,8 +3,8 @@ description: "Example app for flutter_network_throttler — a debug control pane
 publish_to: none
 
 environment:
-  sdk: ^3.12.2
-  flutter: ">=1.17.0"
+  sdk: ^3.8.0
+  flutter: ">=3.32.0"
 
 dependencies:
   flutter:

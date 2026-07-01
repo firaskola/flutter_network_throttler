@@ -3,6 +3,7 @@ import 'package:meta/meta.dart';
 import 'endpoint_rule.dart';
 import 'failure.dart';
 import 'network_condition.dart';
+import 'response_tampering.dart';
 
 /// The complete, serialisable throttling configuration: the master switch, the
 /// active [condition], failure injection, and per-endpoint rules.
@@ -17,6 +18,7 @@ class ThrottleProfile {
     this.presetName = '3G',
     this.condition = NetworkCondition.threeG,
     this.failure = const FailureInjection(),
+    this.tampering = const ResponseTampering(),
     this.rules = const <EndpointRule>[],
   });
 
@@ -33,6 +35,9 @@ class ThrottleProfile {
   /// Failure-injection settings.
   final FailureInjection failure;
 
+  /// Response-tampering settings (truncate / corrupt / garbage bodies).
+  final ResponseTampering tampering;
+
   /// Per-endpoint override rules, evaluated in order (first match wins).
   final List<EndpointRule> rules;
 
@@ -48,6 +53,7 @@ class ThrottleProfile {
     'presetName': presetName,
     'condition': condition.toJson(),
     'failure': failure.toJson(),
+    'tampering': tampering.toJson(),
     'rules': rules.map((r) => r.toJson()).toList(),
   };
 
@@ -65,6 +71,10 @@ class ThrottleProfile {
         (json['failure'] as Map?)?.cast<String, dynamic>() ??
             const <String, dynamic>{},
       ),
+      tampering: ResponseTampering.fromJson(
+        (json['tampering'] as Map?)?.cast<String, dynamic>() ??
+            const <String, dynamic>{},
+      ),
       rules: rules
           .map((e) => EndpointRule.fromJson((e as Map).cast<String, dynamic>()))
           .toList(),
@@ -77,6 +87,7 @@ class ThrottleProfile {
     String? presetName,
     NetworkCondition? condition,
     FailureInjection? failure,
+    ResponseTampering? tampering,
     List<EndpointRule>? rules,
   }) {
     return ThrottleProfile(
@@ -84,6 +95,7 @@ class ThrottleProfile {
       presetName: presetName ?? this.presetName,
       condition: condition ?? this.condition,
       failure: failure ?? this.failure,
+      tampering: tampering ?? this.tampering,
       rules: rules ?? this.rules,
     );
   }
@@ -95,6 +107,7 @@ class ThrottleProfile {
       other.presetName == presetName &&
       other.condition == condition &&
       other.failure == failure &&
+      other.tampering == tampering &&
       _listEquals(other.rules, rules);
 
   @override
@@ -103,6 +116,7 @@ class ThrottleProfile {
     presetName,
     condition,
     failure,
+    tampering,
     Object.hashAll(rules),
   );
 }

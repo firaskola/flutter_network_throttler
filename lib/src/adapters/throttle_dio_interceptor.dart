@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:dio/dio.dart';
 
@@ -6,10 +7,12 @@ import '../engine/throttle_controller.dart';
 import '../engine/throttle_engine.dart';
 import '../model/failure.dart';
 import '../model/request_log.dart';
+import '../model/response_tampering.dart';
 
 /// A `package:dio` [Interceptor] that applies a [ThrottleController]'s profile
-/// to every request — latency, bandwidth, packet loss, failure injection, and
-/// per-endpoint rules — and records each request in the live log.
+/// to every request — latency, bandwidth, packet loss, failure injection,
+/// response tampering, and per-endpoint rules — and records each request in the
+/// live log.
 ///
 /// Attach it to your `Dio` instance:
 ///
@@ -19,6 +22,10 @@ import '../model/request_log.dart';
 /// final controller = ThrottleController();
 /// final dio = Dio()..interceptors.add(ThrottleInterceptor(controller));
 /// ```
+///
+/// Response tampering operates on `String` and `List<int>` response bodies; for
+/// it to apply, use `ResponseType.plain` or `ResponseType.bytes` (already-parsed
+/// JSON objects can't be meaningfully corrupted and are left untouched).
 class ThrottleInterceptor extends Interceptor {
   /// Creates an interceptor driven by [controller].
   ThrottleInterceptor(this.controller);
@@ -28,6 +35,7 @@ class ThrottleInterceptor extends Interceptor {
 
   static const String _planKey = '_throttle_plan';
   static const String _startKey = '_throttle_start_us';
+  static const String _tamperKey = '_throttle_tamper';
 
   ThrottleEngine get _engine => controller.engine;
 
@@ -36,7 +44,11 @@ class ThrottleInterceptor extends Interceptor {
     RequestOptions options,
     RequestInterceptorHandler handler,
   ) async {
-    final plan = _engine.planRequest(options.method, options.uri);
+    final plan = _engine.planRequest(
+      options.method,
+      options.uri,
+      requestHeaders: _stringHeaders(options.headers),
+    );
 
     if (plan.passThrough) {
       options.extra[_startKey] = _nowMicros();
@@ -62,6 +74,9 @@ class ThrottleInterceptor extends Interceptor {
     }
 
     options.extra[_planKey] = plan.latency + uploadDelay;
+    if (plan.tampering != null) {
+      options.extra[_tamperKey] = plan.tampering;
+    }
     handler.next(options);
   }
 
@@ -92,17 +107,38 @@ class ThrottleInterceptor extends Interceptor {
       await Future<void>.delayed(downloadDelay);
     }
 
+    final tampering = options.extra[_tamperKey] as ResponseTampering?;
+    final tampered = tampering != null && _applyTamper(response, tampering);
+
     final artificial = priorDelay + downloadDelay;
     final throttled = artificial > Duration.zero;
     _engine.record(
       _entry(
         options,
         throttled ? RequestOutcome.throttled : RequestOutcome.ok,
-        throttled ? '+${artificial.inMilliseconds}ms' : '0ms',
+        tampered
+            ? tampering.mode.code
+            : (throttled ? '+${artificial.inMilliseconds}ms' : '0ms'),
         throttled ? artificial : null,
       ),
     );
     handler.next(response);
+  }
+
+  /// Mangles a `String` or `List<int>` response body in place. Returns whether
+  /// tampering was actually applied (decoded objects are left untouched).
+  bool _applyTamper(Response<dynamic> response, ResponseTampering tampering) {
+    final data = response.data;
+    if (data is List<int>) {
+      response.data = _engine.applyTampering(tampering, data);
+      return true;
+    }
+    if (data is String) {
+      final tampered = _engine.applyTampering(tampering, utf8.encode(data));
+      response.data = utf8.decode(tampered, allowMalformed: true);
+      return true;
+    }
+    return false;
   }
 
   DioException _failureException(
@@ -115,6 +151,12 @@ class ThrottleInterceptor extends Interceptor {
       _engine.record(
         _entry(options, RequestOutcome.failed, '$status', latency),
       );
+      final retryAfter = failure.retryAfter;
+      final headers = retryAfter == null
+          ? null
+          : Headers.fromMap(<String, List<String>>{
+              'retry-after': <String>['${_retryAfterSeconds(retryAfter)}'],
+            });
       return DioException(
         requestOptions: options,
         type: DioExceptionType.badResponse,
@@ -122,6 +164,7 @@ class ThrottleInterceptor extends Interceptor {
           requestOptions: options,
           statusCode: status,
           statusMessage: failure.type.label,
+          headers: headers ?? Headers(),
           data: <String, dynamic>{
             'error': 'simulated',
             'reason': failure.reason,
@@ -183,4 +226,18 @@ class ThrottleInterceptor extends Interceptor {
   }
 
   int _nowMicros() => DateTime.now().microsecondsSinceEpoch;
+
+  /// Flattens dio's `Map<String, dynamic>` headers to `Map<String, String>` for
+  /// header-based rule matching.
+  Map<String, String> _stringHeaders(Map<String, dynamic> headers) {
+    return <String, String>{
+      for (final entry in headers.entries)
+        entry.key: entry.value is Iterable
+            ? (entry.value as Iterable).join(',')
+            : '${entry.value}',
+    };
+  }
 }
+
+/// `Retry-After` is expressed in whole seconds; never advertise less than 1.
+int _retryAfterSeconds(Duration d) => d.inSeconds < 1 ? 1 : d.inSeconds;

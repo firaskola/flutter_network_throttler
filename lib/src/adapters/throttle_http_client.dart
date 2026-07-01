@@ -10,8 +10,8 @@ import '../model/request_log.dart';
 
 /// A drop-in `package:http` [Client] that routes every request through a
 /// [ThrottleController], applying the configured latency, bandwidth limits,
-/// packet loss, failure injection, and per-endpoint rules — and recording each
-/// request in the live log.
+/// packet loss, failure injection, response tampering, and per-endpoint rules —
+/// and recording each request in the live log.
 ///
 /// Wrap whatever client you already use:
 ///
@@ -22,10 +22,21 @@ import '../model/request_log.dart';
 /// final response = await client.get(Uri.parse('https://api.example.com/feed'));
 /// ```
 ///
+/// By default the response body is **streamed through progressively**: each
+/// chunk is delayed by its own transfer time under the bandwidth cap, so the
+/// body is never fully buffered in memory and download progress reaches your UI
+/// as it arrives. Set [streamResponses] to `false` to buffer the whole body
+/// before returning (the body is always buffered when response tampering is
+/// applied to that request, since damaging it requires the full payload).
+///
 /// Closing the [ThrottleClient] also closes the wrapped [inner] client.
 class ThrottleClient extends BaseClient {
   /// Creates a throttling client wrapping [inner].
-  ThrottleClient(this.inner, {required this.controller});
+  ThrottleClient(
+    this.inner, {
+    required this.controller,
+    this.streamResponses = true,
+  });
 
   /// The underlying client that performs the real network I/O.
   final Client inner;
@@ -33,11 +44,20 @@ class ThrottleClient extends BaseClient {
   /// The controller whose profile drives throttling decisions.
   final ThrottleController controller;
 
+  /// Whether response bodies are streamed through with bandwidth applied
+  /// progressively (`true`, the default) or fully buffered before returning
+  /// (`false`).
+  final bool streamResponses;
+
   ThrottleEngine get _engine => controller.engine;
 
   @override
   Future<StreamedResponse> send(BaseRequest request) async {
-    final plan = _engine.planRequest(request.method, request.url);
+    final plan = _engine.planRequest(
+      request.method,
+      request.url,
+      requestHeaders: request.headers,
+    );
 
     if (plan.passThrough) {
       final stopwatch = Stopwatch()..start();
@@ -54,7 +74,7 @@ class ThrottleClient extends BaseClient {
       return response;
     }
 
-    // Pre-request latency (base + jitter + any rule delay).
+    // Pre-request latency (connection setup + base + jitter + any rule delay).
     if (plan.latency > Duration.zero) {
       await Future<void>.delayed(plan.latency);
     }
@@ -72,40 +92,106 @@ class ThrottleClient extends BaseClient {
       await Future<void>.delayed(uploadDelay);
     }
 
+    final preDelay = plan.latency + uploadDelay;
     final stopwatch = Stopwatch()..start();
     final response = await inner.send(request);
-    final bytes = await response.stream.toBytes();
-    stopwatch.stop();
 
-    // Download bandwidth delay based on the response size.
-    final downloadDelay = _engine.bandwidthDelay(bytes.length);
-    if (downloadDelay > Duration.zero) {
-      await Future<void>.delayed(downloadDelay);
+    // Tampering needs the whole body; so does the opt-in buffering mode.
+    final tampering = plan.tampering;
+    if (tampering != null || !streamResponses) {
+      final bytes = await response.stream.toBytes();
+      final downloadDelay = _engine.bandwidthDelay(bytes.length);
+      if (downloadDelay > Duration.zero) {
+        await Future<void>.delayed(downloadDelay);
+      }
+      stopwatch.stop();
+
+      final body = tampering == null
+          ? bytes
+          : _engine.applyTampering(tampering, bytes);
+      final artificial = preDelay + downloadDelay;
+      final throttled = artificial > Duration.zero;
+      final meta = tampering != null
+          ? tampering.mode.code
+          : (throttled
+                ? '+${artificial.inMilliseconds}ms'
+                : '${stopwatch.elapsedMilliseconds}ms');
+      _engine.record(
+        _entry(
+          request,
+          throttled ? RequestOutcome.throttled : RequestOutcome.ok,
+          meta,
+          throttled ? artificial : null,
+        ),
+      );
+
+      return StreamedResponse(
+        Stream<List<int>>.value(body),
+        response.statusCode,
+        // Keep the original content-length when truncating so the http client
+        // sees the size mismatch a real truncated transfer would produce.
+        contentLength: tampering == null ? body.length : response.contentLength,
+        request: response.request,
+        headers: response.headers,
+        isRedirect: response.isRedirect,
+        persistentConnection: response.persistentConnection,
+        reasonPhrase: response.reasonPhrase,
+      );
     }
 
-    final artificial = plan.latency + uploadDelay + downloadDelay;
-    final throttled = artificial > Duration.zero;
-    _engine.record(
-      _entry(
-        request,
-        throttled ? RequestOutcome.throttled : RequestOutcome.ok,
-        throttled
-            ? '+${artificial.inMilliseconds}ms'
-            : '${stopwatch.elapsedMilliseconds}ms',
-        throttled ? artificial : null,
-      ),
-    );
-
+    // Streaming path: throttle each chunk as it flows, never buffering.
     return StreamedResponse(
-      Stream<List<int>>.value(bytes),
+      _throttledDownload(response.stream, request, preDelay, stopwatch),
       response.statusCode,
-      contentLength: bytes.length,
+      contentLength: response.contentLength,
       request: response.request,
       headers: response.headers,
       isRedirect: response.isRedirect,
       persistentConnection: response.persistentConnection,
       reasonPhrase: response.reasonPhrase,
     );
+  }
+
+  /// Delays each chunk by its transfer time under the download cap, logging the
+  /// request once the body has finished draining (or is cancelled).
+  Stream<List<int>> _throttledDownload(
+    Stream<List<int>> source,
+    BaseRequest request,
+    Duration preDelay,
+    Stopwatch stopwatch,
+  ) async* {
+    var downloadMicros = 0;
+    var logged = false;
+    void log() {
+      if (logged) return;
+      logged = true;
+      stopwatch.stop();
+      final artificial = preDelay + Duration(microseconds: downloadMicros);
+      final throttled = artificial > Duration.zero;
+      _engine.record(
+        _entry(
+          request,
+          throttled ? RequestOutcome.throttled : RequestOutcome.ok,
+          throttled
+              ? '+${artificial.inMilliseconds}ms'
+              : '${stopwatch.elapsedMilliseconds}ms',
+          throttled ? artificial : null,
+        ),
+      );
+    }
+
+    try {
+      await for (final chunk in source) {
+        final delay = _engine.bandwidthDelay(chunk.length);
+        if (delay > Duration.zero) {
+          await Future<void>.delayed(delay);
+          downloadMicros += delay.inMicroseconds;
+        }
+        yield chunk;
+      }
+    } finally {
+      log();
+    }
   }
 
   Future<StreamedResponse> _applyFailure(
@@ -119,6 +205,11 @@ class ThrottleClient extends BaseClient {
       final body = utf8.encode(
         '{"error":"simulated","reason":"${failure.reason}","status":$status}',
       );
+      final headers = <String, String>{'content-type': 'application/json'};
+      final retryAfter = failure.retryAfter;
+      if (retryAfter != null) {
+        headers['retry-after'] = '${_retryAfterSeconds(retryAfter)}';
+      }
       _engine.record(
         _entry(request, RequestOutcome.failed, '$status', latency),
       );
@@ -127,7 +218,7 @@ class ThrottleClient extends BaseClient {
         status,
         contentLength: body.length,
         request: request,
-        headers: const {'content-type': 'application/json'},
+        headers: headers,
         reasonPhrase: failure.type.label,
       );
     }
@@ -168,3 +259,6 @@ class ThrottleClient extends BaseClient {
     super.close();
   }
 }
+
+/// `Retry-After` is expressed in whole seconds; never advertise less than 1.
+int _retryAfterSeconds(Duration d) => d.inSeconds < 1 ? 1 : d.inSeconds;

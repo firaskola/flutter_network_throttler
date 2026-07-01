@@ -16,6 +16,7 @@ export 'src/model/failure.dart';
 export 'src/model/network_condition.dart';
 export 'src/model/network_exception.dart';
 export 'src/model/request_log.dart';
+export 'src/model/response_tampering.dart';
 export 'src/model/throttle_profile.dart';
 
 // Engine + controller
@@ -43,3 +44,4 @@ export 'src/network_throttler.dart';
 // UI control panel + debug launcher
 export 'src/ui/network_throttler_button.dart';
 export 'src/ui/network_throttler_panel.dart';
+export 'src/ui/network_throttler_scope.dart';

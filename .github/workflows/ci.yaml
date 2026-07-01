@@ -8,12 +8,17 @@ on:
 jobs:
   analyze-test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Catch breakage early by testing the upcoming toolchain too.
+        channel: [stable, beta]
     steps:
       - uses: actions/checkout@v4
 
       - uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          channel: ${{ matrix.channel }}
 
       - name: Install dependencies
         run: flutter pub get
@@ -24,8 +29,51 @@ jobs:
       - name: Analyze
         run: flutter analyze
 
-      - name: Run tests
-        run: flutter test
+      - name: Run tests with coverage
+        # Golden + screenshot tests run in the dedicated `goldens` job below.
+        run: flutter test --coverage --exclude-tags "golden || screenshot"
+
+      - name: Upload coverage to Codecov
+        if: matrix.channel == 'stable'
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage/lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
 
       - name: Publish dry-run
+        if: matrix.channel == 'stable'
         run: flutter pub publish --dry-run
+
+  goldens:
+    # Goldens are generated on macOS; run them there so the comparison is
+    # apples-to-apples. The tolerant comparator absorbs minor host differences.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Golden tests
+        run: flutter test --tags golden
+
+  web-build:
+    # Backs up the "web platform" claim by building the example for web.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Build example for web
+        working-directory: example
+        run: |
+          flutter pub get
+          flutter build web

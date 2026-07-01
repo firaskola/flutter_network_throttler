@@ -29,6 +29,8 @@ class ThrottlerTokens {
   static const Color amber = Color(0xFFE8A317);
   static const Color teal = Color(0xFF0E9488);
   static const Color purple = Color(0xFF7A52E0);
+  static const Color indigo = Color(0xFF4F46E5);
+  static const Color orange = Color(0xFFEA580C);
 
   // Failure-card tint
   static const Color redTint = Color(0xFFFDECEC);

@@ -107,11 +107,21 @@ class _HomePageState extends State<HomePage> {
         EndpointRule(
           method: 'POST',
           pattern: '/v1/upload',
-          action: FailAction(FailureType.http500),
+          action: FailAction(FailureType.http429),
         ),
-        EndpointRule(pattern: '*.cdn.img/*', action: PassThroughAction()),
+        // Match by host: let CDN images bypass throttling entirely.
+        EndpointRule(
+          pattern: '/*',
+          host: '*.cdn.img',
+          action: PassThroughAction(),
+        ),
       ],
     ),
+  );
+
+  // An "offline blip" scenario: go offline for 4s, then recover to 3G.
+  final ThrottleScenario _scenario = ThrottleScenario.offlineFor(
+    const Duration(seconds: 4),
   );
 
   late final http.Client _client = ThrottleClient(
@@ -140,6 +150,9 @@ class _HomePageState extends State<HomePage> {
     super.initState();
     // Keep the socket open so echoed frames flow through the throttler.
     _socket.stream.listen((_) {});
+    // Optional: drive the throttler from Flutter DevTools too (no-ops in
+    // release builds).
+    registerThrottleServiceExtensions(_controller);
   }
 
   Future<void> _sendHttp() async {
@@ -156,10 +169,19 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  // Fire ten requests at once to watch concurrent throttling in the live log.
+  Future<void> _burst() async {
+    await Future.wait([for (var i = 0; i < 10; i++) _sendHttp()]);
+  }
+
+  // Play the offline → 3G scenario against the controller.
+  void _runScenario() => _scenario.start(_controller);
+
   void _sendWs() => _socket.sink.add('ping ${_wsSeq++}');
 
   @override
   void dispose() {
+    _scenario.stop();
     _client.close();
     _socket.sink.close();
     _controller.dispose();
@@ -178,6 +200,20 @@ class _HomePageState extends State<HomePage> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
+          FloatingActionButton.small(
+            heroTag: 'scenario',
+            tooltip: 'Offline blip → 3G',
+            onPressed: _runScenario,
+            child: const Icon(Icons.timeline_rounded),
+          ),
+          const SizedBox(height: 12),
+          FloatingActionButton.small(
+            heroTag: 'burst',
+            tooltip: 'Fire 10 concurrent requests',
+            onPressed: _burst,
+            child: const Icon(Icons.dynamic_feed_rounded),
+          ),
+          const SizedBox(height: 12),
           FloatingActionButton.extended(
             heroTag: 'ws',
             onPressed: _sendWs,

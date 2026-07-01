@@ -6,92 +6,34 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_network_throttler/flutter_network_throttler.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-// Real system fonts so rendered text isn't the test framework's box glyphs.
-const _sansPath = '/System/Library/Fonts/Supplemental/Arial.ttf';
-const _monoPath = '/System/Library/Fonts/Supplemental/Andale Mono.ttf';
+import 'support/demo_controller.dart';
+import 'support/load_fonts.dart';
 
-Future<void> _loadFont(String family, String path) async {
-  final loader = FontLoader(family)
-    ..addFont(Future.value(File(path).readAsBytesSync().buffer.asByteData()));
-  await loader.load();
-}
-
+// Regenerate the README image with:
+//   flutter test --tags screenshot
+//
+// Unlike the old version, this loads fonts checked into test/fonts/, so it runs
+// on every platform (macOS, Linux CI, anywhere) — not just on a Mac.
 void main() {
   testWidgets('render the panel to doc/panel.png', (tester) async {
-    if (!File(_sansPath).existsSync() || !File(_monoPath).existsSync()) {
-      markTestSkipped('System fonts not available; skipping screenshot.');
-      return;
-    }
-
-    await _loadFont('Arial', _sansPath);
-    await _loadFont('monospace', _monoPath);
+    await loadTestFonts();
 
     const width = 400.0;
-    const height = 1640.0;
+    const height = 2200.0;
     tester.view.physicalSize = const Size(width * 2, height * 2);
     tester.view.devicePixelRatio = 2.0;
     addTearDown(tester.view.reset);
 
-    // A rich, representative state.
-    final controller = ThrottleController()
-      ..applyPreset(NetworkCondition.threeG)
-      ..addRule(
-        const EndpointRule(
-          method: 'GET',
-          pattern: '/v1/feed',
-          action: DelayAction(Duration(milliseconds: 800)),
-        ),
-      )
-      ..addRule(
-        const EndpointRule(
-          method: 'POST',
-          pattern: '/v1/upload',
-          action: FailAction(FailureType.http500),
-        ),
-      )
-      ..addRule(
-        const EndpointRule(pattern: '*.cdn.img/*', action: PassThroughAction()),
-      )
-      ..toggleFailure()
-      ..setFailureProbability(0.15)
-      ..seedLog([
-        RequestLogEntry(
-          method: 'GET',
-          url: Uri.parse('https://api.test/v1/feed?page=2'),
-          outcome: RequestOutcome.throttled,
-          meta: '+842ms',
-          appliedDelay: const Duration(milliseconds: 842),
-        ),
-        RequestLogEntry(
-          method: 'POST',
-          url: Uri.parse('https://api.test/v1/upload'),
-          outcome: RequestOutcome.failed,
-          meta: '500',
-        ),
-        RequestLogEntry(
-          method: 'WS↓',
-          url: Uri.parse('wss://api.test/socket'),
-          outcome: RequestOutcome.ok,
-          meta: 'recv',
-          kind: RequestKind.webSocket,
-        ),
-        RequestLogEntry(
-          method: 'GET',
-          url: Uri.parse('https://api.test/v1/profile/me'),
-          outcome: RequestOutcome.ok,
-          meta: '118ms',
-        ),
-      ]);
+    final controller = buildDemoController();
 
     final key = GlobalKey();
     await tester.pumpWidget(
       MaterialApp(
         debugShowCheckedModeBanner: false,
-        theme: ThemeData(fontFamily: 'Arial', useMaterial3: true),
+        theme: ThemeData(fontFamily: 'Roboto', useMaterial3: true),
         home: Scaffold(
           body: Center(
             child: RepaintBoundary(
